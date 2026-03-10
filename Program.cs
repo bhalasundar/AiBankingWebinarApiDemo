@@ -3,16 +3,23 @@ using System.Text;
 using System.Text.Json;
 
 var builder = WebApplication.CreateBuilder(args);
+// In Program.cs - Add CORS for your frontend
+var MyAllowSpecificOrigins = "_myAllowSpecificOrigins";
 
 builder.Services.AddCors(options =>
 {
-    options.AddDefaultPolicy(policy =>
-    {
-        policy.AllowAnyOrigin()
-              .AllowAnyHeader()
-              .AllowAnyMethod();
-    });
+    options.AddPolicy(name: MyAllowSpecificOrigins,
+        policy =>
+        {
+            policy.WithOrigins(
+                "https://your-frontend.netlify.app", // Replace with your frontend URL
+                "http://localhost:8000" // Keep for local testing
+            )
+            .AllowAnyHeader()
+            .AllowAnyMethod();
+        });
 });
+
 
 builder.Services.AddHttpClient();
 
@@ -36,8 +43,10 @@ app.MapPost("/api/ask", async (HttpContext context, IHttpClientFactory httpClien
     {
         return Results.BadRequest(new { answer = "Question is required." });
     }
+    var apiKey = Environment.GetEnvironmentVariable("OPENAI_API_KEY")
+                    ?? builder.Configuration["OpenAI:ApiKey"];
 
-    var apiKey = builder.Configuration["OpenAI:ApiKey"];
+   // var apiKey = builder.Configuration["OpenAI:ApiKey"];
 
     if (string.IsNullOrEmpty(apiKey))
     {
