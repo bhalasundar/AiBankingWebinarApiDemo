@@ -3,7 +3,8 @@ using System.Text;
 using System.Text.Json;
 
 var builder = WebApplication.CreateBuilder(args);
-// In Program.cs - Add CORS for your frontend
+
+// CORS Policy - FIXED with your actual Netlify URL
 var MyAllowSpecificOrigins = "_myAllowSpecificOrigins";
 
 builder.Services.AddCors(options =>
@@ -12,51 +13,53 @@ builder.Services.AddCors(options =>
         policy =>
         {
             policy.WithOrigins(
-                "https://your-frontend.netlify.app", // Replace with your frontend URL
-                "http://localhost:8000" // Keep for local testing
+                "https://bfsiwebinr.netlify.app", // ✅ YOUR ACTUAL NETLIFY URL
+                "http://localhost:8000",
+                "http://localhost:3000",
+                "http://localhost:5000"
             )
             .AllowAnyHeader()
-            .AllowAnyMethod();
+            .AllowAnyMethod()
+            .AllowCredentials(); // Added for better compatibility
         });
 });
-
 
 builder.Services.AddHttpClient();
 
 var app = builder.Build();
 
-app.UseCors();
+// FIXED: Use the policy name!
+app.UseCors(MyAllowSpecificOrigins);
 
+// Optional health check endpoint
 app.MapGet("/", () => "AI Banking Webinar API is running.");
+app.MapGet("/health", () => Results.Ok(new { status = "healthy" }));
 
 app.MapPost("/api/ask", async (HttpContext context, IHttpClientFactory httpClientFactory) =>
 {
-    using var reader = new StreamReader(context.Request.Body);
-    var body = await reader.ReadToEndAsync();
-
-    var request = JsonSerializer.Deserialize<QuestionRequest>(body, new JsonSerializerOptions
+    try
     {
-        PropertyNameCaseInsensitive = true
-    });
+        using var reader = new StreamReader(context.Request.Body);
+        var body = await reader.ReadToEndAsync();
 
-    if (request == null || string.IsNullOrWhiteSpace(request.Question))
-    {
-        return Results.BadRequest(new { answer = "Question is required." });
-    }
-    var apiKey = Environment.GetEnvironmentVariable("OPENAI_API_KEY")
-                    ?? builder.Configuration["OpenAI:ApiKey"];
-
-   // var apiKey = builder.Configuration["OpenAI:ApiKey"];
-
-    if (string.IsNullOrEmpty(apiKey))
-    {
-        return Results.Ok(new
+        var request = JsonSerializer.Deserialize<QuestionRequest>(body, new JsonSerializerOptions
         {
-            answer = "OpenAI API key is missing."
+            PropertyNameCaseInsensitive = true
         });
-    }
 
-    var systemPrompt = """
+        if (request == null || string.IsNullOrWhiteSpace(request.Question))
+        {
+            return Results.BadRequest(new { answer = "Question is required." });
+        }
+
+        var apiKey = Environment.GetEnvironmentVariable("OPENAI_API_KEY");
+
+        if (string.IsNullOrEmpty(apiKey))
+        {
+            return Results.Ok(new { answer = "OpenAI API key is missing." });
+        }
+
+        var systemPrompt = """
 You are a professional banking assistant in the UAE.
 
 Answer clearly and professionally.
@@ -64,50 +67,49 @@ Answer clearly and professionally.
 If the question is about banking products, explain generally and say that final approval depends on the bank's policy.
 """;
 
-    var openAiRequest = new
-    {
-        model = "gpt-4o-mini",
-        messages = new object[]
+        var openAiRequest = new
         {
-            new { role = "system", content = systemPrompt },
-            new { role = "user", content = request.Question }
-        },
-        temperature = 0.3
-    };
+            model = "gpt-4o-mini",
+            messages = new object[]
+            {
+                new { role = "system", content = systemPrompt },
+                new { role = "user", content = request.Question }
+            },
+            temperature = 0.3
+        };
 
-    var client = httpClientFactory.CreateClient();
+        var client = httpClientFactory.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
 
-    client.DefaultRequestHeaders.Authorization =
-        new AuthenticationHeaderValue("Bearer", apiKey);
+        var json = JsonSerializer.Serialize(openAiRequest);
+        var response = await client.PostAsync(
+            "https://api.openai.com/v1/chat/completions",
+            new StringContent(json, Encoding.UTF8, "application/json"));
 
-    var json = JsonSerializer.Serialize(openAiRequest);
+        var responseText = await response.Content.ReadAsStringAsync();
 
-    var response = await client.PostAsync(
-        "https://api.openai.com/v1/chat/completions",
-        new StringContent(json, Encoding.UTF8, "application/json"));
+        if (!response.IsSuccessStatusCode)
+        {
+            return Results.Ok(new
+            {
+                answer = "OpenAI call failed.",
+                statusCode = (int)response.StatusCode
+            });
+        }
 
-    var responseText = await response.Content.ReadAsStringAsync();
+        using var doc = JsonDocument.Parse(responseText);
+        var answer = doc.RootElement
+            .GetProperty("choices")[0]
+            .GetProperty("message")
+            .GetProperty("content")
+            .GetString();
 
-    if (!response.IsSuccessStatusCode)
-{
-    return Results.Ok(new
+        return Results.Ok(new { answer = answer });
+    }
+    catch (Exception ex)
     {
-        answer = "OpenAI call failed.",
-        statusCode = (int)response.StatusCode,
-        details = responseText
-    });
-}
-
-    using var doc = JsonDocument.Parse(responseText);
-
-    var answer = doc.RootElement
-        .GetProperty("choices")[0]
-        .GetProperty("message")
-        .GetProperty("content")
-        .GetString();
-
-    return Results.Ok(new { answer });
-
+        return Results.Ok(new { answer = "An error occurred. Please try again." });
+    }
 });
 
 app.Run();
